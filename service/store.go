@@ -74,6 +74,8 @@ func NewMemStore() *MemStore {
 }
 
 // Get 拉画像(M2-1 内存实现)
+//
+// M2-2 加 metrics 计数(跟 RedisStore 行为一致)
 func (m *MemStore) Get(ctx context.Context, tenantID, userID string) (*Profile, bool, error) {
 	if userID == "" {
 		return nil, false, fmt.Errorf("user_id required")
@@ -82,12 +84,16 @@ func (m *MemStore) Get(ctx context.Context, tenantID, userID string) (*Profile, 
 	defer m.mu.RUnlock()
 	p, ok := m.entries[makeKey(tenantID, userID)]
 	if !ok {
+		profileGetTotal.WithLabelValues(tenantID, "miss").Inc()
 		return nil, false, nil
 	}
+	profileGetTotal.WithLabelValues(tenantID, "hit").Inc()
 	return p.Clone(), true, nil
 }
 
 // Set 写入画像(M2-1 内存实现)
+//
+// M2-2 加 metrics + audit
 func (m *MemStore) Set(ctx context.Context, tenantID string, p *Profile) error {
 	if p == nil {
 		return fmt.Errorf("profile is nil")
@@ -99,10 +105,14 @@ func (m *MemStore) Set(ctx context.Context, tenantID string, p *Profile) error {
 	defer m.mu.Unlock()
 	// 写入时也存 clone,防 caller 后续改入参影响 cache
 	m.entries[makeKey(tenantID, p.UserID)] = p.Clone()
+	profileSetTotal.WithLabelValues(tenantID).Inc()
+	AuditSet(tenantID, p.UserID)
 	return nil
 }
 
 // Delete 删除画像(M2-1 内存实现)
+//
+// M2-2 加 metrics + audit
 func (m *MemStore) Delete(ctx context.Context, tenantID, userID string) (bool, error) {
 	if userID == "" {
 		return false, fmt.Errorf("user_id required")
@@ -114,6 +124,8 @@ func (m *MemStore) Delete(ctx context.Context, tenantID, userID string) (bool, e
 		return false, nil
 	}
 	delete(m.entries, key)
+	profileDeleteTotal.WithLabelValues(tenantID).Inc()
+	AuditDelete(tenantID, userID)
 	return true, nil
 }
 

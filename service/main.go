@@ -13,6 +13,9 @@ import (
 
 	profilev1 "github.com/wau/profile/profilev1"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -24,10 +27,11 @@ import (
 // 流程:
 //   1. 加载配置
 //   2. 设置 slog(JSON handler)
-//   3. 初始化 store(M2-1 MemStore,M2-2 RedisStore)
+//   3. 初始化 store(M2-1 MemStore / M2-2 RedisStore,按 cfg.Backend 切换)
 //   4. 构造 ProfileServiceServer
 //   5. 启动 gRPC server(:50062)+ health + reflection
-//   6. 等待 SIGINT/SIGTERM,graceful shutdown
+//   6. 启动 HTTP /healthz + /metrics(:8082,K8s 友好)
+//   7. 等待 SIGINT/SIGTERM,graceful shutdown
 func Run() error {
 	// 1. 加载配置
 	cfg := LoadConfig()
@@ -37,9 +41,11 @@ func Run() error {
 	slog.SetDefault(logger)
 	cfg.LogConfig()
 
-	// 3. 初始化 store(M2-1 MemStore)
-	store := NewMemStore()
-	logger.Info("profile store initialized", "backend", "memory")
+	// 3. 初始化 store(按 cfg.Backend 切换)
+	store, err := newStore(cfg)
+	if err != nil {
+		return fmt.Errorf("init store: %w", err)
+	}
 
 	// 4. 构造 ProfileServiceServer
 	ps := NewProfileServiceServer(store)
@@ -63,22 +69,23 @@ func Run() error {
 	// 启用 reflection(grpcurl 调试用)
 	reflection.Register(grpcServer)
 
-	// 启动 HTTP /healthz 探针(K8s 友好)
+	// 6. 启动 HTTP /healthz + /metrics 探针(K8s 友好)
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "OK")
 	})
+	httpMux.Handle("/metrics", promhttp.Handler())
 	httpServer := &http.Server{Addr: ":8082", Handler: httpMux}
 
-	// 6. 等待 SIGINT/SIGTERM
+	// 7. 等待 SIGINT/SIGTERM
 	errCh := make(chan error, 2)
 	go func() {
 		logger.Info("gRPC server listening", "addr", cfg.GRPCAddr)
 		errCh <- grpcServer.Serve(lis)
 	}()
 	go func() {
-		logger.Info("HTTP /healthz listening", "addr", ":8082")
+		logger.Info("HTTP server listening", "addr", ":8082", "endpoints", "/healthz, /metrics")
 		errCh <- httpServer.ListenAndServe()
 	}()
 
@@ -103,6 +110,40 @@ func Run() error {
 	httpServer.Shutdown(shutdownCtx)
 	logger.Info("wau-profile-service stopped")
 	return nil
+}
+
+// newStore 按 cfg.Backend 构造 ProfileStore
+//
+// M2-1: "memory" → MemStore
+// M2-2: "redis"  → RedisStore(连真 Redis,PING 失败返 error 启动失败)
+func newStore(cfg *Config) (ProfileStore, error) {
+	switch cfg.Backend {
+	case "memory":
+		return NewMemStore(), nil
+	case "redis":
+		if cfg.RedisAddr == "" {
+			return nil, fmt.Errorf("WAU_PROFILE_BACKEND=redis but WAU_PROFILE_REDIS_ADDR empty")
+		}
+		client := redis.NewClient(&redis.Options{
+			Addr:     cfg.RedisAddr,
+			Password: cfg.RedisPassword, // 从 env 读,可能为空(本地 redis 无密码)
+			DB:       cfg.RedisDB,
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := client.Ping(ctx).Err(); err != nil {
+			return nil, fmt.Errorf("redis ping %s db=%d: %w", cfg.RedisAddr, cfg.RedisDB, err)
+		}
+		slog.Info("profile store initialized",
+			"backend", "redis",
+			"addr", cfg.RedisAddr,
+			"db", cfg.RedisDB,
+			"tenants", cfg.AllowedTenants,
+		)
+		return NewRedisStore(client, "wau:profile:v1:", cfg.AllowedTenants, cfg.TTL), nil
+	default:
+		return nil, fmt.Errorf("unknown WAU_PROFILE_BACKEND: %q (want memory|redis)", cfg.Backend)
+	}
 }
 
 // loggingInterceptor 简单 gRPC 请求日志

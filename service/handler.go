@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	profilev1 "github.com/wau/profile/profilev1"
 
@@ -11,18 +12,15 @@ import (
 )
 
 // =============================================================================
-// v0.8.0 M2-1 ProfileService gRPC handler
+// v0.8.0 M2-2 ProfileService gRPC handler
 // =============================================================================
 //
-// 3 RPC:
-//   - GetProfile: 拉画像
-//   - SetProfile: 写入画像(D9 拒收)
-//   - DeleteProfile: 删除画像
+// M2-2 改动:
+//   - 跟 MemStore / RedisStore 兼容(handler 不知道具体 store 类型)
+//   - SetProfile D9 拒收时调 AuditRejectD9 + profileD9RejectTotal
+//   - store 返 tenant 拒绝 error → 返 codes.PermissionDenied
+//   - source tag 按 store 类型(redis / memory-store)动态判断
 //
-// 设计:
-//   - GetProfile 找不到 → GetProfileResponse{not_found: true},不返 EmptyProfile(让 caller 决定)
-//   - D9 拒收 → codes.PermissionDenied + SetProfileResponse{success: false, error_field: "xxx"}
-//   - Profile.user_id 空 → codes.InvalidArgument
 // =============================================================================
 
 // ProfileServiceServer 完整 gRPC server 实现
@@ -47,6 +45,11 @@ func (s *ProfileServiceServer) GetProfile(ctx context.Context, req *profilev1.Ge
 
 	profile, found, err := s.store.Get(ctx, req.GetTenantId(), req.GetUserId())
 	if err != nil {
+		if isTenantReject(err) {
+			AuditTenantReject(req.GetTenantId(), req.GetUserId(), "get")
+			profileTenantRejectTotal.WithLabelValues(req.GetTenantId(), "get").Inc()
+			return nil, status.Errorf(codes.PermissionDenied, "tenant not allowed: %v", err)
+		}
 		slog.Error("GetProfile store error", "err", err, "user_id", req.GetUserId())
 		return nil, status.Error(codes.Internal, "store error")
 	}
@@ -60,7 +63,7 @@ func (s *ProfileServiceServer) GetProfile(ctx context.Context, req *profilev1.Ge
 
 	return &profilev1.GetProfileResponse{
 		Profile: profileToProto(profile),
-		Source:  "memory-store",
+		Source:  sourceOfStore(s.store),
 	}, nil
 }
 
@@ -80,7 +83,8 @@ func (s *ProfileServiceServer) SetProfile(ctx context.Context, req *profilev1.Se
 
 	// D9 敏感字段校验
 	if field, hit := CheckProfileSensitiveFields(profile); hit {
-		slog.Warn("SetProfile rejected by D9", "user_id", profile.UserID, "field", field)
+		AuditRejectD9(req.GetTenantId(), profile.UserID, field)
+		profileD9RejectTotal.Inc()
 		return &profilev1.SetProfileResponse{
 			Success:    false,
 			ErrorField: field,
@@ -88,6 +92,11 @@ func (s *ProfileServiceServer) SetProfile(ctx context.Context, req *profilev1.Se
 	}
 
 	if err := s.store.Set(ctx, req.GetTenantId(), profile); err != nil {
+		if isTenantReject(err) {
+			AuditTenantReject(req.GetTenantId(), profile.UserID, "set")
+			profileTenantRejectTotal.WithLabelValues(req.GetTenantId(), "set").Inc()
+			return nil, status.Errorf(codes.PermissionDenied, "tenant not allowed: %v", err)
+		}
 		slog.Error("SetProfile store error", "err", err, "user_id", profile.UserID)
 		return nil, status.Error(codes.Internal, "store error")
 	}
@@ -108,6 +117,11 @@ func (s *ProfileServiceServer) DeleteProfile(ctx context.Context, req *profilev1
 
 	deleted, err := s.store.Delete(ctx, req.GetTenantId(), req.GetUserId())
 	if err != nil {
+		if isTenantReject(err) {
+			AuditTenantReject(req.GetTenantId(), req.GetUserId(), "delete")
+			profileTenantRejectTotal.WithLabelValues(req.GetTenantId(), "delete").Inc()
+			return nil, status.Errorf(codes.PermissionDenied, "tenant not allowed: %v", err)
+		}
 		slog.Error("DeleteProfile store error", "err", err, "user_id", req.GetUserId())
 		return nil, status.Error(codes.Internal, "store error")
 	}
@@ -119,7 +133,34 @@ func (s *ProfileServiceServer) DeleteProfile(ctx context.Context, req *profilev1
 }
 
 // =============================================================================
-// Profile <-> proto 转换
+// helpers
+// =============================================================================
+
+// isTenantReject 判断是否是 tenant 拒绝 error
+//
+// Store 返 "tenant %q not allowed" 错误,handler 转 grpc PermissionDenied
+func isTenantReject(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "not allowed") || strings.Contains(msg, "tenant")
+}
+
+// sourceOfStore 返 store 类型的 source tag
+func sourceOfStore(store ProfileStore) string {
+	switch store.(type) {
+	case *RedisStore:
+		return "redis"
+	case *MemStore:
+		return "memory-store"
+	default:
+		return "unknown"
+	}
+}
+
+// =============================================================================
+// Profile <-> proto 转换(跟 M2-1 一致)
 // =============================================================================
 
 func profileToProto(p *Profile) *profilev1.Profile {
