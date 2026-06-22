@@ -1,0 +1,33 @@
+# Go build artifacts
+/bin/
+/profile-service
+/wau-profile-service
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Buf local
+.bin/
+
+# proto 生成产物(可选:看团队约定)
+// profilev1/*.pb.go
+# 当前约定: profilev1/*.pb.go 入仓(跟 wau-intent 仓一致),不忽略

@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package wau.profile.v1;
+
+option go_package = "github.com/wau/profile/profilev1;profilev1";
+
+// =============================================================================
+// v0.8.0 M2-1 wau-profile 服务定义
+// 跟 wau-intent 仓 M2-3 Profile-aware 推荐配套:
+//   - GetProfile 拉画像(wau-intent 调)
+//   - SetProfile 写画像(管理端)
+//   - DeleteProfile 删除(GDPR / 用户注销)
+// =============================================================================
+
+// =============================================================================
+// 1. Profile 实体
+// =============================================================================
+//
+// 跟 wau-intent 仓 service/profile_client.go 的 StaticProfile 字段完全对齐:
+//
+//   StaticProfile = {
+//     UserID          string   ← Profile.user_id
+//     Role            string   ← Profile.role
+//     Department      string   ← Profile.department
+//     PreferredSkills []string ← Profile.preferred_skills
+//     PreferredAgents []string ← Profile.preferred_agents
+//   }
+//
+// 不存敏感字段(D9 拒收)。
+message Profile {
+  string user_id = 1;                // 主键,必填,空 → ErrInvalidArgument
+  string role = 2;                   // doctor / developer / trader / general
+  string department = 3;             // healthcare / engineering / finance / unknown
+  repeated string preferred_skills = 4;
+  repeated string preferred_agents = 5;
+}
+
+// =============================================================================
+// 2. GetProfile (主路径,被 wau-intent M2-3 调)
+// =============================================================================
+message GetProfileRequest {
+  string user_id = 1;
+  // M2-1 接受但不强制校验
+  // M2-2 强制白名单(caller tenant 必须在 allowed 列表)
+  string tenant_id = 2;
+}
+
+message GetProfileResponse {
+  Profile profile = 1;               // 找不到 → 空,not_found=true
+  bool not_found = 2;                // 找不到时返 true(让 caller 决定是否用 EmptyProfile)
+  string source = 3;                 // "memory-store" / "redis" / "fallback-empty"
+}
+
+// =============================================================================
+// 3. SetProfile (管理端)
+// =============================================================================
+message SetProfileRequest {
+  Profile profile = 1;               // user_id 必填
+  string tenant_id = 2;              // M2-1 接受但不强制校验
+}
+
+message SetProfileResponse {
+  bool success = 1;
+  // D9 拒收时返被拒字段名(debug 友好)
+  // 成功时为空字符串
+  string error_field = 2;
+}
+
+// =============================================================================
+// 4. DeleteProfile (GDPR / 用户注销)
+// =============================================================================
+message DeleteProfileRequest {
+  string user_id = 1;
+  string tenant_id = 2;
+}
+
+message DeleteProfileResponse {
+  bool success = 1;
+  bool not_found = 2;
+}
+
+// =============================================================================
+// 5. 空消息(预留)
+// =============================================================================
+message Empty {}
+
+// =============================================================================
+// Service 定义
+// =============================================================================
+//
+// HealthCheck 走 google.rpc.health.v1 (grpc_health_v1),不写在 proto 里
+// 跟 wau-intent / wau-scheduler 一致
+service ProfileService {
+  // GetProfile 拉画像
+  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
+
+  // SetProfile 写入画像(D9 拒收)
+  rpc SetProfile(SetProfileRequest) returns (SetProfileResponse);
+
+  // DeleteProfile 删除画像
+  rpc DeleteProfile(DeleteProfileRequest) returns (DeleteProfileResponse);
+}
