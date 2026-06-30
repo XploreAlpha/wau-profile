@@ -143,3 +143,40 @@ wau-profile/
 - M2-1 计划: `/home/inamoto888/WAU-develop/plan/kernel/v0.8.0/2026-06-22-M2-1-wau-profile-scaffold.md`
 - wau-intent M2-3 commit: `aeb5dce` (ProfileClient interface + D9 + D10 + D11)
 - 同构参考: `wau-scheduler` 仓(本仓结构同构)
+
+---
+
+## v0.9.0 "Acorn" 收口段(2026-09-15 GA)
+
+上文详细介绍了 v0.8.0 雏形 + ProfileClient interface + 同构参考。本段为 v0.9.0 GA 增量补充。
+
+### 角色
+
+| OS 类比 | User Profile Store(用户画像存储)|
+|---|---|
+| 部署 | 独立 git 仓 = `wau-profile`,WAU-core-kernel 6 子模块之一 |
+| 通信 | gRPC ProfileClient(被 wau-intent / WAU-core-kernel 调用)|
+| 状态 | v0.8.0 GA 已发(2026-07-13)|
+
+### v0.9.0 集成(per B 端 vision)
+
+- **2-sided marketplace**(per [[project-wau-two-sided-marketplace-2026-06-27]]):
+  - C 端 profile:用户偏好 + 历史 + 偏好模型
+  - B 端 profile:商家画像 + 客户群体分析
+- **B 端 dashboard 数据源**:registration_count, active_users, GMV 指标从本仓读
+- **3 新仓接入**:wau-channel 把 C 端消息打 tag 存 profile;wau-intent 读 profile 做 routing
+
+### v0.9.0 "Acorn" 5 份核心文档
+
+| # | 文件 | 内容 |
+|---|---|---|
+| 1 | [README.md](README.md)(本文件)| 仓入口 + ProfileClient + v0.9.0 收口段 |
+| 2 | [QUICKSTART.md](QUICKSTART.md) | 15 分钟跑通 1 个 Profile 写入 + 查询 |
+| 3 | [DEPLOY.md](DEPLOY.md) | 存储 backend + 备份策略 |
+| 4 | [ARCHITECTURE.md](ARCHITECTURE.md) | Profile schema + 多租户隔离 |
+| 5 | [CHANGELOG.md](CHANGELOG.md) | v0.8.0 + v0.9.0 倒序 |
+
+### 历史锚点
+
+- v0.8.0 GA([[project-v0.8.0-GA-2026-07-13]])
+- 2-sided vision([[project-wau-two-sided-marketplace-2026-06-27]])
